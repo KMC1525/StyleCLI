@@ -1,14 +1,16 @@
 //! Pipeline: lê imagem por imagem → prepara → anota com o modelo → grava 1 linha JSONL.
 
 use crate::annotate::{self, Annotation, Record, Sampling};
+use crate::drop::parse_dropped;
 use crate::engine::{self, Server, ServerCfg};
-use crate::source::Source;
+use crate::source::{ImageEntry, Source};
 use crate::{http, imgprep, model};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{IsTerminal, Write};
@@ -25,7 +27,7 @@ static CHILD: Mutex<Option<Arc<Mutex<Child>>>> = Mutex::new(None);
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    pub input: Option<PathBuf>,
+    pub input: Vec<PathBuf>,
     pub output: Option<PathBuf>,
     pub overwrite: bool,
     pub limit: Option<usize>,
@@ -48,19 +50,46 @@ pub fn image_id(data: &[u8]) -> String {
     d[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn ask_input() -> Result<PathBuf> {
+/// Aceita o caminho como veio; se não existir, tenta interpretá-lo como texto "arrastado"
+/// (aspas, `\ `, `file://`...), útil quando o terminal não tratou o caminho.
+fn normalize_arg(p: &Path) -> PathBuf {
+    if p.exists() {
+        return p.to_path_buf();
+    }
+    match parse_dropped(&p.to_string_lossy()).as_slice() {
+        [one] if one.exists() => one.clone(),
+        _ => p.to_path_buf(),
+    }
+}
+
+/// Pergunta as entradas. O usuário pode **arrastar e soltar** pastas/arquivos na janela do
+/// terminal (isso cola o caminho) e apertar Enter. Repete até receber algo válido.
+fn ask_inputs() -> Result<Vec<Source>> {
     if !std::io::stdin().is_terminal() {
         bail!("informe a pasta ou o arquivo .zip/.rar:  style <ENTRADA>   (veja: style --help)");
     }
-    print!("Pasta ou arquivo (.zip/.rar) com as imagens: ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    let line = line.trim().trim_matches(['"', '\'']).trim();
-    if line.is_empty() {
-        bail!("nenhuma entrada informada");
+    eprintln!("Arraste a PASTA de imagens ou o arquivo .zip/.rar para esta janela e aperte Enter");
+    eprintln!("(ou digite o caminho; pode soltar vários de uma vez; Enter vazio sai).");
+    loop {
+        eprint!("> ");
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("nenhuma entrada informada");
+        }
+        let paths = parse_dropped(&line);
+        if paths.is_empty() {
+            bail!("nenhuma entrada informada");
+        }
+        match detect_all(&paths) {
+            Ok(sources) => return Ok(sources),
+            Err(e) => eprintln!("{e:#}\nTente de novo.\n"),
+        }
     }
-    Ok(PathBuf::from(line))
+}
+
+fn detect_all(paths: &[PathBuf]) -> Result<Vec<Source>> {
+    paths.iter().map(|p| Source::detect(p)).collect()
 }
 
 /// Lê ids já gravados e descarta uma última linha incompleta (queda no meio da escrita).
@@ -168,33 +197,45 @@ fn start_server(o: &Options) -> Result<Server> {
 }
 
 pub fn execute(o: Options) -> Result<()> {
-    let input = match &o.input {
-        Some(p) => p.clone(),
-        None => ask_input()?,
+    let sources = if o.input.is_empty() {
+        ask_inputs()?
+    } else {
+        let paths: Vec<PathBuf> = o.input.iter().map(|p| normalize_arg(p)).collect();
+        detect_all(&paths)?
     };
-    let source = Source::detect(&input)?;
-    let total = source.count()?;
-    if total == 0 {
-        bail!(
-            "nenhuma imagem (jpg, png, webp, gif, bmp) encontrada em '{}'",
-            input.display()
-        );
+    let mut counts = Vec::new();
+    for src in &sources {
+        let n = src.count()?;
+        if n == 0 {
+            bail!(
+                "nenhuma imagem (jpg, png, webp, gif, bmp) encontrada em '{}'",
+                src.path().display()
+            );
+        }
+        counts.push(n);
     }
-    let out_path = o
-        .output
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(format!("{}.jsonl", source.stem())));
+    let total: usize = counts.iter().sum();
+    let out_path = o.output.clone().unwrap_or_else(|| {
+        let stem = if sources.len() == 1 {
+            sources[0].stem()
+        } else {
+            "dataset".to_string()
+        };
+        PathBuf::from(format!("{stem}.jsonl"))
+    });
     if o.overwrite && out_path.exists() {
         File::create(&out_path)?;
     }
     let done = load_done(&out_path)?;
 
-    eprintln!(
-        "Entrada : {} ({}, {} imagens)",
-        input.display(),
-        source.kind(),
-        total
-    );
+    for (src, n) in sources.iter().zip(&counts) {
+        eprintln!(
+            "Entrada : {} ({}, {} imagens)",
+            src.path().display(),
+            src.kind(),
+            n
+        );
+    }
     eprintln!(
         "Saída   : {}{}",
         out_path.display(),
@@ -240,8 +281,10 @@ pub fn execute(o: Options) -> Result<()> {
     let mut seen_ids: HashSet<String> = done;
     let mut server: Option<Server> = None;
 
-    source.for_each(|entry| {
+    let halt = Cell::new(false);
+    let mut handle = |entry: ImageEntry| -> Result<bool> {
         if STOP.load(Ordering::SeqCst) || o.limit.is_some_and(|l| ok >= l) {
+            halt.set(true);
             return Ok(false);
         }
         seen += 1;
@@ -347,7 +390,13 @@ pub fn execute(o: Options) -> Result<()> {
             ));
         }
         Ok(true)
-    })?;
+    };
+    for src in &sources {
+        if halt.get() {
+            break;
+        }
+        src.for_each(&mut handle)?;
+    }
     pb.finish_and_clear();
 
     eprintln!(

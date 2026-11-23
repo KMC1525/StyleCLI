@@ -7,7 +7,7 @@ CLI em Rust que gera **datasets de estilo em JSONL** a partir de imagens, artes 
 na memória.
 
 ```text
-style                    # executa (pergunta a pasta/arquivo)
+style                    # executa: arraste a pasta/arquivo para o terminal
 style <pasta|zip|rar>    # executa direto
 style update             # atualiza o próprio style
 ```
@@ -27,9 +27,24 @@ Ou compile: `cargo install --git https://github.com/KMC1525/StyleCLI` (precisa d
 
 ## Uso
 
+### Arrastar e soltar (o jeito mais fácil)
+
+1. Abra o terminal e rode apenas `style`.
+2. **Arraste a pasta de imagens (ou o arquivo `.zip`/`.rar`) para dentro da janela do terminal** e aperte Enter.
+
+O terminal cola o caminho e o `style` entende o formato de cada terminal (aspas, espaços com `\`,
+`file://...`, `& '...'` do PowerShell). Dá para soltar **vários itens de uma vez** — todos entram no mesmo
+dataset (imagens repetidas são ignoradas). Se o caminho for inválido, ele pergunta de novo.
+
+No **Windows** também dá para arrastar a pasta/arquivo **direto sobre o `style.exe`** (ou dar duplo clique nele
+e arrastar para a janela); a janela espera um Enter no fim para você ler o resultado.
+
+### Pela linha de comando
+
 ```bash
 style ./minhas-imagens                 # pasta (inclui subpastas) → minhas-imagens.jsonl
 style colecao.zip -o dataset.jsonl     # arquivo compactado
+style pasta1 pacote.zip hq.rar         # várias entradas → dataset.jsonl
 style quadrinhos.rar --limit 5         # testa com 5 imagens
 style ./fotos -t 2 --image-size 512    # PC bem fraco: 2 threads, imagens menores
 ```

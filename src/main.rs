@@ -2,6 +2,7 @@
 //! a partir de imagens, artes e quadrinhos, rodando um modelo de visão local (GGUF).
 
 mod annotate;
+mod drop;
 mod engine;
 mod http;
 mod imgprep;
@@ -26,8 +27,10 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
 
-    /// Pasta com imagens, ou arquivo .zip / .rar (sem isso, o programa pergunta)
-    input: Option<PathBuf>,
+    /// Pastas com imagens e/ou arquivos .zip / .rar. Sem isso o programa pergunta:
+    /// aí é só arrastar e soltar a pasta ou o arquivo na janela do terminal
+    #[arg(num_args = 0..)]
+    input: Vec<PathBuf>,
 
     /// Arquivo de saída .jsonl (padrão: <nome-da-entrada>.jsonl). Se já existir, continua de onde parou
     #[arg(short, long)]
@@ -97,6 +100,30 @@ enum Cmd {
     },
 }
 
+/// No Windows, se o `style` abriu a própria janela de console (duplo clique ou item solto
+/// sobre o .exe), ela fecharia ao terminar e o usuário não leria o resultado.
+#[cfg(windows)]
+fn console_is_ours() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleProcessList;
+    let mut ids = [0u32; 4];
+    // número de processos ligados ao console; 1 = só nós
+    let n = unsafe { GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) };
+    n == 1
+}
+
+#[cfg(not(windows))]
+fn console_is_ours() -> bool {
+    false
+}
+
+fn pause_if_needed() {
+    use std::io::IsTerminal;
+    if console_is_ours() && std::io::stdin().is_terminal() {
+        eprintln!("\nPressione Enter para fechar...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -121,6 +148,8 @@ fn main() {
     };
     if let Err(e) = result {
         eprintln!("erro: {e:#}");
+        pause_if_needed();
         std::process::exit(1);
     }
+    pause_if_needed();
 }
