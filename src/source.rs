@@ -105,6 +105,12 @@ impl Source {
         }
     }
 
+    pub fn path(&self) -> &Path {
+        match self {
+            Source::Dir(p) | Source::Zip(p) | Source::Rar(p) => p,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Source::Dir(_) => "pasta",

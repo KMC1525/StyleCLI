@@ -1,6 +1,6 @@
 [package]
 name = "style"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Gera datasets JSONL de estilo a partir de imagens, artes e quadrinhos (SFW/NSFW) com um modelo de visão local leve"
@@ -32,6 +32,9 @@ zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2.191"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
 
 [profile.release]
 opt-level = 3
